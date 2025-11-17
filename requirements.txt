@@ -1,0 +1,16 @@
+# agentic
+autogen-ext[langchain]
+
+
+# llm
+langchain-openai
+python-dotenv
+langchain-chroma
+langchain-community
+certifi
+httpx
+
+
+# read_file.py
+python-docx
+PyPDF2
