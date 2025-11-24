@@ -14,3 +14,12 @@ httpx
 # read_file.py
 python-docx
 PyPDF2
+
+
+# ml_unstructured.py
+numpy
+scikit-learn
+xgboost
+lightgbm
+catboost
+umap-learn
