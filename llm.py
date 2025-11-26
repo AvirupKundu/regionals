@@ -10,7 +10,7 @@ load_dotenv()
 def llm_call(system_prompt, user_prompt):
     base_url = os.getenv("api_endpoint")
     api_key = os.getenv("api_key")
-    model = os.getenv("model_gpt4o")
+    model = "azure/genailab-maas-gpt-4o"
 
     client = httpx.Client(verify=False)
 
