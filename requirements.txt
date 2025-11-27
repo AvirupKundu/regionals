@@ -1,5 +1,7 @@
 # agentic
 autogen-ext[langchain]
+autogen-agentchat
+autogen-ext[openai,azure]
 
 
 # llm
@@ -14,6 +16,7 @@ httpx
 # read_file.py
 python-docx
 PyPDF2
+pdfminer.six
 
 
 # ml_unstructured.py

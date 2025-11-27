@@ -26,8 +26,8 @@ def llm_call(system_prompt: str, user_prompt: str | None = None, image_path: str
     Images are passed as structured multimodal inputs, not inline Markdown.
     """
     base_url = os.getenv("api_endpoint")
-    api_key = os.getenv("api_key")
-    model = "azure/genailab-maas-gpt-4o"
+    api_key = os.getenv("OPENAI_API_KEY")
+    model = os.getenv("LLM_MODEL")
 
     client = httpx.Client(verify=False)
 
@@ -67,14 +67,14 @@ def llm_call(system_prompt: str, user_prompt: str | None = None, image_path: str
 
 if __name__ == "__main__":
     # Example 1: Text only
-    llm_call("You are a helpful assistant.", user_prompt="Explain special relativity simply.")
+    # llm_call("You are a helpful assistant.", user_prompt="Explain special relativity simply.")
 
     # Example 2: Image only
-    # llm_call("You are a helpful assistant.", image_path="sample-image.jpg")
+    # llm_call("You are a helpful assistant.", image_path="Designer.png")
 
     # Example 3: Image + text
-    # llm_call(
-    #     "You are a helpful assistant.",
-    #     user_prompt="Summarize what is shown and list any visible errors.",
-    #     image_path="sample-image.jpg"
-    # )
+    llm_call(
+        "You are a helpful assistant.",
+        user_prompt="Summarize what is shown and list any visible errors.",
+        image_path="Designer.png"
+    )

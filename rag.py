@@ -27,9 +27,9 @@ client = httpx.Client(verify=False)
 # LLM setup (IMPORTANT)
 # Please update the base_url, model, api_key as specified below.
 llm = ChatOpenAI(
-    base_url = os.getenv("api_endpoint"),
-    api_key = os.getenv("api_key"),
-    model="azure/genailab-maas-gpt-35-turbo",
+    base_url = os.getenv("BASE_URL"),
+    api_key = os.getenv("OPENAI_API_KEY"),
+    model="gpt-4.1-nano",
     http_client=client
 )
 
@@ -37,9 +37,9 @@ llm = ChatOpenAI(
 # EMBEDDING setup (IMPORTANT)
 # Please update the base_url, model, api_key as specified below.
 embedding_model = OpenAIEmbeddings(
-    base_url = os.getenv("api_endpoint"),
-    api_key = os.getenv("api_key"),
-    model="azure/genailab-maas-text-embedding-3-large",
+    base_url = os.getenv("BASE_URL"),
+    api_key = os.getenv("OPENAI_API_KEY"),
+    model="text-embedding-3-small",
     http_client=client
 )
 

@@ -1,22 +1,37 @@
+
 import os
-import math
 import json
 import hashlib
-from typing import List, Dict, Tuple, Optional
-
+import httpx
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 import chromadb
 from chromadb.config import Settings
+from dotenv import load_dotenv
 
-# Optional: token-level F1 helper (simple)
-def _tokenize_text(s: str) -> List[str]:
+# Load variables from .env file
+load_dotenv()
+
+# ----------------------------
+# Local tiktoken cache
+# ----------------------------
+tiktoken_cache_dir = "tiktoken_cache"
+os.environ["TIKTOKEN_CACHE_DIR"] = tiktoken_cache_dir
+assert os.path.exists(os.path.join(tiktoken_cache_dir, "9b5ad71b2ce5302211f9c61530b329a4922fc6a4")), \
+    "Missing tiktoken cache file in 'tiktoken_cache/'."
+
+client = httpx.Client(verify=False)
+
+
+# ----------------------------
+# Token-level F1 helper
+# ----------------------------
+def _tokenize_text(s):
     return s.lower().split()
 
-def f1_score_tokens(pred: str, gold: str) -> float:
+def f1_score_tokens(pred, gold):
     p_tokens = _tokenize_text(pred)
     g_tokens = _tokenize_text(gold)
     if not p_tokens and not g_tokens:
@@ -37,26 +52,14 @@ def f1_score_tokens(pred: str, gold: str) -> float:
         return 0.0
     return 2 * (precision * recall) / (precision + recall)
 
-# 1. Chunking and splitting of large data without loss
-def chunk_texts(
-    documents: List[Dict],
-    chunk_size: int = 1000,
-    chunk_overlap: int = 200,
-    keep_meta: bool = True
-) -> List[Dict]:
-    """
-    documents: list of dicts with keys: 'id', 'text', optional 'meta'
-    Returns list of chunks with fields: 'chunk_id', 'doc_id', 'text', 'meta'
-    Uses LangChain RecursiveCharacterTextSplitter to preserve text and deterministic splitting.
-    """
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", " ", ""]
-    )
+# ----------------------------
+# 1) Chunking
+# ----------------------------
+def chunk_texts(documents, chunk_size=1000, chunk_overlap=200, keep_meta=True):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap, separators=["\n\n", "\n", " ", ""])
     chunks = []
     for doc in documents:
-        doc_id = doc.get("id") or hashlib.sha1(doc.get("text","").encode()).hexdigest()
+        doc_id = doc.get("id") or hashlib.sha1(doc.get("text", "").encode()).hexdigest()
         text = doc.get("text", "")
         meta = doc.get("meta", {})
         split_texts = splitter.split_text(text)
@@ -70,40 +73,31 @@ def chunk_texts(
             chunks.append(chunk)
     return chunks
 
-# 2. Create embeddings
-def create_embeddings(
-    texts: List[str],
-    openai_api_key: Optional[str] = None,
-    model: str = "text-embedding-3-small"
-) -> List[List[float]]:
-    """
-    Returns list of embeddings (floats) for each text.
-    Uses LangChain OpenAIEmbeddings wrapper.
-    Provide API key via env or openai_api_key param.
-    """
-    if openai_api_key:
-        os.environ["OPENAI_API_KEY"] = openai_api_key
-    embedder = OpenAIEmbeddings(model=model)
-    # LangChain handles batching internally; return as list of lists
-    embeddings = embedder.embed_documents(texts)
-    return embeddings
+# ----------------------------
+# 2) Create embeddings
+# ----------------------------
+def create_embeddings(texts):
+    embedder = OpenAIEmbeddings(
+        base_url=os.getenv("BASE_URL"),
+        api_key=os.getenv("OPENAI_API_KEY"),
+        model=os.getenv("EMBEDDING_MODEL"),
+        http_client=client
+    )
 
-# 3. Store in vector DB (Chroma)
-def store_in_chroma(
-    collection_name: str,
-    chunks: List[Dict],
-    embeddings: List[List[float]],
-    persist_directory: str = "./chromadb_store",
-    distance_metric: str = "cosine"
-) -> chromadb.api.models.Collection.Collection:
-    """
-    Stores chunk vectors + metadata in a local chroma collection.
-    Expects len(chunks) == len(embeddings).
-    Each chunk dict should contain chunk_id, text, doc_id, meta.
-    Returns chroma collection object.
-    """
-    client = chromadb.Client(Settings(chroma_db_impl="duckdb+parquet", persist_directory=persist_directory))
-    # Create or get collection
+    print("Embedding model initialized.")
+    embeddings = embedder.embed_documents(texts)
+    print(embeddings)
+    print(f"Created {len(embeddings)} embeddings.")
+    return embeddings, embedder
+
+
+# ----------------------------
+# 3) Store in Chroma
+# ----------------------------
+
+def store_in_chroma(collection_name, chunks, embeddings, persist_directory="./chromadb_store", distance_metric="cosine"):
+    client = chromadb.PersistentClient(path=persist_directory)
+
     try:
         collection = client.get_collection(name=collection_name)
     except Exception:
@@ -113,35 +107,24 @@ def store_in_chroma(
     metadatas = [{"doc_id": c["doc_id"], **(c.get("meta") or {})} for c in chunks]
     documents = [c["text"] for c in chunks]
 
-    # Upsert - chroma will overwrite duplicates by ID
-    collection.upsert(
-        ids=ids,
-        metadatas=metadatas,
-        documents=documents,
-        embeddings=embeddings
-    )
-    client.persist()
+    if len(documents) != len(embeddings):
+        raise ValueError("Mismatch between documents and embeddings length")
+
+    collection.upsert(ids=ids, metadatas=metadatas, documents=documents, embeddings=embeddings)
     return collection
 
-# 4. Search knowledge base (vector DB) based on user input
-def search_vector_db(
-    query: str,
-    collection: chromadb.api.models.Collection.Collection,
-    embedder: OpenAIEmbeddings,
-    k: int = 5,
-    filter_meta: Optional[Dict] = None
-) -> List[Dict]:
-    """
-    Returns top-k results with scores and metadata.
-    filter_meta: optional metadata filter dict (exact match)
-    """
+
+# ----------------------------
+# 4) Search
+# ----------------------------
+
+def search_vector_db(query, collection, embedder, k=5, filter_meta=None):
     q_emb = embedder.embed_query(query)
-    results = collection.query(
-        query_embeddings=[q_emb],
-        n_results=k,
-        where=filter_meta or {}
-    )
-    # results contains ids, documents, metadatas, distances
+    if filter_meta:
+        results = collection.query(query_embeddings=[q_emb], n_results=k, where=filter_meta)
+    else:
+        results = collection.query(query_embeddings=[q_emb], n_results=k)
+
     hits = []
     for idx in range(len(results["ids"][0])):
         hits.append({
@@ -152,27 +135,20 @@ def search_vector_db(
         })
     return hits
 
-# 5. Retrieve knowledge base result
-def retrieve_kb_result(hits: List[Dict]) -> str:
-    """
-    Simple synthesizer that concatenates top hits into a single context string.
-    You can replace with a smarter reranker or summarizer.
-    """
-    # Concatenate with separators and return
+
+# ----------------------------
+# 5) Retrieve KB result
+# ----------------------------
+def retrieve_kb_result(hits):
     parts = []
     for i, h in enumerate(hits):
         parts.append(f"Result {i+1} (id={h['id']})\n{h['text']}")
     return "\n\n---\n\n".join(parts)
 
-# 6. Accuracy of response
-def evaluate_retrieval_accuracy(
-    retrieved_hits: List[Dict],
-    relevant_doc_ids: List[str],
-    k: int = 5
-) -> Dict:
-    """
-    Compute recall@k — fraction of relevant_doc_ids found in top-k retrieved.
-    """
+# ----------------------------
+# 6) Evaluation
+# ----------------------------
+def evaluate_retrieval_accuracy(retrieved_hits, relevant_doc_ids, k=5):
     found = 0
     retrieved_ids = [h["meta"].get("doc_id") for h in retrieved_hits]
     for rid in relevant_doc_ids:
@@ -181,105 +157,86 @@ def evaluate_retrieval_accuracy(
     recall_at_k = found / max(1, len(relevant_doc_ids))
     return {"recall_at_k": recall_at_k, "retrieved_ids": retrieved_ids[:k]}
 
-def evaluate_response_accuracy(
-    response_text: str,
-    gold_text: str,
-    embedder: OpenAIEmbeddings
-) -> Dict:
-    """
-    Two signals:
-      1) semantic similarity via embeddings (cosine)
-      2) token-level F1 (approximate)
-    Returns dict with both scores.
-    """
-    # Embedding similarity
+def evaluate_response_accuracy(response_text, gold_text, embedder):
     emb_resp = embedder.embed_query(response_text)
     emb_gold = embedder.embed_query(gold_text)
     cos_sim = float(cosine_similarity([emb_resp], [emb_gold])[0][0])
-
-    # Token F1
     token_f1 = f1_score_tokens(response_text, gold_text)
-
     return {"cosine_similarity": cos_sim, "token_f1": token_f1}
 
-# 7. Main orchestration function
-def main_pipeline(
-    docs: List[Dict],
-    user_queries: List[Dict],
-    collection_name: str = "kb_collection",
-    persist_directory: str = "./chromadb_store",
-    chunk_size: int = 1000,
-    chunk_overlap: int = 200,
-    embed_model: str = "text-embedding-3-small",
-    top_k: int = 5,
-    openai_api_key: Optional[str] = None
-) -> Dict:
-    """
-    docs: list of {'id':..., 'text':..., 'meta':{...}}
-    user_queries: list of {'query':..., 'gold_doc_ids':[...], 'gold_answer': optional str}
-    Returns: dict with stored collection info and per-query metrics.
-    """
-    if openai_api_key:
-        os.environ["OPENAI_API_KEY"] = openai_api_key
+# ----------------------------
+# 7) Main pipeline
+# ----------------------------
+def main_pipeline(docs, user_queries, collection_name="kb_collection", persist_directory="./chromadb_store", chunk_size=1000, chunk_overlap=200, top_k=5):
+    client = httpx.Client(verify=False)
 
-    # 1. Chunk
-    chunks = chunk_texts(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap, keep_meta=True)
+    # 1) Chunk
+    chunks = chunk_texts(
+        docs,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        keep_meta=True
+    )
 
-    # 2. Embeddings for chunks
+    # 2) Embeddings
     texts = [c["text"] for c in chunks]
-    embedder = OpenAIEmbeddings(model=embed_model)
-    embeddings = create_embeddings(texts, model=embed_model)
+    embeddings, embedder = create_embeddings(texts)
 
-    # 3. Store in Chroma
-    collection = store_in_chroma(collection_name, chunks, embeddings, persist_directory=persist_directory)
+    # 3) Store
+    collection = store_in_chroma(
+        collection_name,
+        chunks,
+        embeddings,
+        persist_directory=persist_directory
+    )
+    print(f"Chroma collection '{collection_name}' ready with {len(chunks)} chunks.")
+
+    # Optional LLM for generating answers
+    llm = ChatOpenAI(
+        base_url=os.getenv("BASE_URL"),
+        api_key=os.getenv("OPENAI_API_KEY"),
+        model=os.getenv("LLM_MODEL"),
+        http_client=client
+    )
 
     results = {"collection_name": collection_name, "num_chunks": len(chunks), "queries": []}
 
-    # For each user query: search, retrieve, evaluate
     for q in user_queries:
         query_text = q["query"]
         gold_doc_ids = q.get("gold_doc_ids", [])
-        gold_answer = q.get("gold_answer")  # optional reference answer for response evaluation
+        gold_answer = q.get("gold_answer")
 
         hits = search_vector_db(query_text, collection, embedder, k=top_k)
         context = retrieve_kb_result(hits)
 
-        # If you want to generate an LLM response using retrieved context, call your LLM here.
-        # Example: response = llm(f"Use context:\n{context}\nAnswer: {query_text}")
-        # For this code we will treat the concatenated context as the "response" when gold_answer is None.
-        response_text = q.get("generated_response") or context
+        # Generate response using LLM
+        response_text = llm.invoke(f"Use the following context to answer the question:\n{context}\nQuestion: {query_text}")
 
         retrieval_metrics = evaluate_retrieval_accuracy(hits, gold_doc_ids, k=top_k)
         response_metrics = {}
         if gold_answer:
-            response_metrics = evaluate_response_accuracy(response_text, gold_answer, embedder)
+            response_metrics = evaluate_response_accuracy(str(response_text), gold_answer, embedder)
 
         results["queries"].append({
             "query": query_text,
             "hits": [{"id": h["id"], "doc_id": h["meta"].get("doc_id"), "distance": h["distance"]} for h in hits],
             "retrieval_metrics": retrieval_metrics,
             "response_metrics": response_metrics,
-            "response_text_snippet": response_text[:1000]
+            "response_text_snippet": str(response_text)[:1000]
         })
-
     return results
 
-# Example minimal usage
+# ----------------------------
+# Example usage
+# ----------------------------
 if __name__ == "__main__":
-    # Load API key via env or set it here (not recommended to hardcode)
-    OPENAI_KEY = os.getenv("OPENAI_API_KEY", None)
-
-    # Sample docs
     docs = [
         {"id": "doc1", "text": "LangChain is a library for building applications with LLMs. It provides chains, agents, and integrations.", "meta": {"title": "LangChain intro"}},
-        {"id": "doc2", "text": "Chroma is an open-source embedding database designed for local and cloud usage. It supports simple Python API.", "meta": {"title": "Chroma intro"}},
+        {"id": "doc2", "text": "Chroma is an open-source embedding database designed for local and cloud usage. It supports simple Python API.", "meta": {"title": "Chroma intro"}}
     ]
-
-    # Sample queries with ground truth doc ids and optional gold answer
     user_queries = [
         {"query": "What is LangChain used for?", "gold_doc_ids": ["doc1"], "gold_answer": "LangChain is a library for building applications with LLMs, providing chains and integrations."},
         {"query": "What is Chroma?", "gold_doc_ids": ["doc2"], "gold_answer": "Chroma is an open-source embedding database with a Python API for local and cloud use."}
     ]
-
-    out = main_pipeline(docs, user_queries, openai_api_key=OPENAI_KEY)
-    print(json.dumps(out, indent=2))
+    output = main_pipeline(docs, user_queries)
+    print(json.dumps(output, indent=2))
