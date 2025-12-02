@@ -1,0 +1,34 @@
+the default page must be a login screen with admin and user based login. for now just focus on the design of UI and UX only.
+Note that the entire frontend of the application must be only in HTML, CSS, JS and Bootstrap only. All components in frontend must get values from python functions in backend in JSON format only.
+For now, only use dummy JSON data in return statements of python functions.
+
+
+Now create an admin dashboard page with a side navigation bar to navigate between admin console dashboard, model training, technicians and schedules page
+
+
+now make the login functionality working with default admin ID and default user ID created. Do not use sqlalchemy as it breaks the code mostly. Post login, the session states must be maintained.
+
+
+now create the user dashboard page with a side navigation bar to navigate between user dashboard, my schedules, circuit breakers page.
+
+
+on the admin dashboard, can you add a side navigation bar to navigate between admin console dashboard, model training, technicians and schedules page
+
+
+Now on the technicians page on admin console, it should list down all technician details in tabular format. Admins must have the priviledge to create/modify/delete any users or other admins.
+
+
+now on the model training page, add an upload option to upload any .csv/.xlsx file and a dropdown with options to choose from list of different ML algorithms with short description. Also, add a "Train Model" button to it.
+When user will upload a file and select the model from dropdown and clicks on Train Model button then the uploaded file data must be read in the backend and during this process a progress status must be showing in the frontend along with time elapsed and estimated time left.
+
+
+can you now give a futuristic look and feel to the entire application with circuit animations hovering in the entire background throughout the application.
+
+
+the login card moved to top left of application. please fix it
+
+
+can you please add branding of the app name as Smart Circuit AI on the login screen
+
+
+can you give a darker themed appearance to the entire application so that it looks more futuristic
